@@ -57,13 +57,25 @@ with st.container():
             # Extract ticker from filename (without extension)
             ticker = file.name.split('.')[0].upper()
             # Read CSV
-            df = pd.read_csv(file)
-            # Ensure Date column is datetime
-            if 'Date' in df.columns:
-                df['Date'] = pd.to_datetime(df['Date'])
-                datasets[ticker] = df
-            else:
-                st.error(f"File {file.name} missing 'Date' column")
+            try:
+                df = pd.read_csv(file)
+                # Ensure Date column is datetime
+                if 'Date' in df.columns:
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    # Check if Close column exists and has valid data
+                    if 'Close' in df.columns:
+                        # Remove rows where Close is NaN
+                        df = df.dropna(subset=['Close'])
+                        if len(df) > 0:
+                            datasets[ticker] = df
+                        else:
+                            st.error(f"File {file.name} has no valid Close price data")
+                    else:
+                        st.error(f"File {file.name} missing 'Close' column")
+                else:
+                    st.error(f"File {file.name} missing 'Date' column")
+            except Exception as e:
+                st.error(f"Error reading file {file.name}: {str(e)}")
     
     # Display uploaded datasets
     if datasets:
@@ -218,12 +230,40 @@ def calculate_stats(data):
     closes = data['Close'].dropna().values
     returns = calculate_returns(data)
     
+    # Handle empty or insufficient data
+    if len(closes) == 0:
+        return {
+            'currentPrice': 0.0,
+            'totalReturn': 0.0,
+            'volatility': 0.0,
+            'avgReturn': 0.0,
+            'maxReturn': 0.0,
+            'minReturn': 0.0,
+            'medianReturn': 0.0,
+            'sharpe': 0.0,
+            'maxDrawdown': 0.0,
+            'skewness': 0.0,
+            'kurtosis': 0.0
+        }
+    
     if len(closes) < 2:
-        return {}
+        return {
+            'currentPrice': round(float(closes[-1]), 2) if closes[-1] is not None else 0.0,
+            'totalReturn': 0.0,
+            'volatility': 0.0,
+            'avgReturn': 0.0,
+            'maxReturn': 0.0,
+            'minReturn': 0.0,
+            'medianReturn': 0.0,
+            'sharpe': 0.0,
+            'maxDrawdown': 0.0,
+            'skewness': 0.0,
+            'kurtosis': 0.0
+        }
     
     if not returns:
         return {
-            'currentPrice': round(closes[-1], 2),
+            'currentPrice': round(float(closes[-1]), 2) if closes[-1] is not None else 0.0,
             'totalReturn': 0.0,
             'volatility': 0.0,
             'avgReturn': 0.0,
