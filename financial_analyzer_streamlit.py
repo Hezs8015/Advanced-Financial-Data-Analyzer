@@ -1358,9 +1358,24 @@ with tab4:
             
             for ticker, data in datasets.items():
                 current_price = data['Close'].iloc[-1]
+                
+                # Validate data before calculation
+                if current_price is None or current_price == 0:
+                    st.error(f"{ticker}: Invalid current price (zero or None)")
+                    continue
+                if stop_loss is None or stop_loss == 0:
+                    st.error(f"{ticker}: Stop loss cannot be zero")
+                    continue
+                
                 # Calculate position size
                 risk_amount = initial_capital * (risk_per_trade / 100)
-                position_size = risk_amount / (current_price * (stop_loss / 100))
+                stop_loss_amount = current_price * (stop_loss / 100)
+                
+                if stop_loss_amount == 0:
+                    st.error(f"{ticker}: Stop loss amount is zero")
+                    continue
+                    
+                position_size = risk_amount / stop_loss_amount
                 
                 # Display results
                 st.write(f"**{ticker} Position Sizing**")
@@ -1379,9 +1394,18 @@ with tab4:
             
             for ticker, data in datasets.items():
                 current_price = data['Close'].iloc[-1]
+                
+                # Validate data before calculation
+                if current_price is None or current_price == 0:
+                    st.error(f"{ticker}: Invalid current price (zero or None)")
+                    continue
+                if stop_loss is None or stop_loss == 0:
+                    st.error(f"{ticker}: Stop loss cannot be zero")
+                    continue
+                
                 stop_price = current_price * (1 - stop_loss / 100)
                 take_price = current_price * (1 + take_profit / 100)
-                risk_reward_ratio = take_profit / stop_loss
+                risk_reward_ratio = take_profit / stop_loss if stop_loss != 0 else 0
                 
                 # Display results
                 st.write(f"**{ticker} Risk/Reward Analysis**")
@@ -1411,11 +1435,11 @@ with tab4:
                     st.write(f"**{ticker} Value at Risk**")
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric(f"{confidence}% Daily VaR", f"${daily_var:.2f}")
+                        st.metric(f"{confidence_level}% Daily VaR", f"${daily_var:.2f}")
                     with col2:
-                        st.metric(f"{confidence}% Annual VaR", f"${annual_var:.2f}")
+                        st.metric(f"{confidence_level}% Annual VaR", f"${annual_var:.2f}")
                     with col3:
-                        st.metric(f"{confidence}% Daily Return", f"{var:.2f}%")
+                        st.metric(f"{confidence_level}% Daily Return", f"{var:.2f}%")
                 else:
                     st.write(f"**{ticker}** - Insufficient data for VaR calculation")
         
