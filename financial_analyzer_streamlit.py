@@ -86,25 +86,38 @@ with st.expander("Risk Management Parameters", expanded=False):
 # Helper functions
 def calculate_returns(data):
     returns = []
-    closes = data['Close'].values
+    closes = data['Close'].dropna().values
+    if len(closes) < 2:
+        return returns
     for i in range(1, len(closes)):
-        if closes[i] and closes[i-1]:
-            returns.append((closes[i] - closes[i-1]) / closes[i-1] * 100)
+        try:
+            if closes[i] is not None and closes[i-1] is not None and closes[i-1] != 0:
+                returns.append((closes[i] - closes[i-1]) / closes[i-1] * 100)
+        except (ValueError, TypeError):
+            continue
     return returns
 
 def calculate_ema(data, period):
-    closes = data['Close'].values
+    closes = data['Close'].dropna().values
     ema = []
+    if len(closes) == 0:
+        return ema
     multiplier = 2 / (period + 1)
     
     ema.append(closes[0])
     for i in range(1, len(closes)):
-        ema.append((closes[i] - ema[i-1]) * multiplier + ema[i-1])
+        try:
+            ema.append((closes[i] - ema[i-1]) * multiplier + ema[i-1])
+        except (ValueError, TypeError):
+            ema.append(ema[i-1])
     return ema
 
 def calculate_rsi(data, period=14):
-    closes = data['Close'].values
+    closes = data['Close'].dropna().values
     rsi = []
+    
+    if len(closes) < period + 1:
+        return [None] * len(closes)
     
     for i in range(0, period):
         rsi.append(None)
@@ -113,40 +126,72 @@ def calculate_rsi(data, period=14):
         gains = 0
         losses = 0
         
-        for j in range(i - period + 1, i + 1):
-            change = closes[j] - closes[j-1]
-            if change > 0:
-                gains += change
+        try:
+            for j in range(i - period + 1, i + 1):
+                change = closes[j] - closes[j-1]
+                if change > 0:
+                    gains += change
+                else:
+                    losses -= change
+            
+            if losses == 0:
+                rsi.append(100)
             else:
-                losses -= change
-        
-        if losses == 0:
-            rsi.append(100)
-        else:
-            avg_gain = gains / period
-            avg_loss = losses / period
-            rs = avg_gain / avg_loss
-            rsi.append(100 - (100 / (1 + rs)))
+                avg_gain = gains / period
+                avg_loss = losses / period
+                rs = avg_gain / avg_loss
+                rsi.append(100 - (100 / (1 + rs)))
+        except (ValueError, TypeError):
+            rsi.append(None)
     
     return rsi
 
 def calculate_macd(data):
     ema12 = calculate_ema(data, 12)
     ema26 = calculate_ema(data, 26)
-    macd = [e12 - e26 for e12, e26 in zip(ema12, ema26)]
+    
+    # Ensure both EMAs have the same length
+    min_length = min(len(ema12), len(ema26))
+    ema12 = ema12[:min_length]
+    ema26 = ema26[:min_length]
+    
+    macd = []
+    for e12, e26 in zip(ema12, ema26):
+        try:
+            macd.append(e12 - e26)
+        except (ValueError, TypeError):
+            macd.append(0)
     
     # Create temporary data for signal line
-    signal_data = pd.DataFrame({'Close': macd, 'Date': data['Date']})
-    signal = calculate_ema(signal_data, 9)
-    histogram = [m - s for m, s in zip(macd, signal)]
+    if len(macd) > 0:
+        signal_data = pd.DataFrame({'Close': macd, 'Date': data['Date'].iloc[:len(macd)]})
+        signal = calculate_ema(signal_data, 9)
+        
+        # Ensure macd and signal have the same length
+        min_len = min(len(macd), len(signal))
+        macd = macd[:min_len]
+        signal = signal[:min_len]
+        
+        histogram = []
+        for m, s in zip(macd, signal):
+            try:
+                histogram.append(m - s)
+            except (ValueError, TypeError):
+                histogram.append(0)
+    else:
+        signal = []
+        histogram = []
     
     return {'macd': macd, 'signal': signal, 'histogram': histogram}
 
 def calculate_bollinger_bands(data, period=20):
-    closes = data['Close'].values
+    closes = data['Close'].dropna().values
     sma = []
     upper = []
     lower = []
+    
+    if len(closes) < period:
+        return {'sma': [None] * len(closes), 'upper': [None] * len(closes), 'lower': [None] * len(closes)}
     
     for i in range(0, period - 1):
         sma.append(None)
@@ -154,13 +199,18 @@ def calculate_bollinger_bands(data, period=20):
         lower.append(None)
     
     for i in range(period - 1, len(closes)):
-        slice_ = closes[i - period + 1:i + 1]
-        mean = np.mean(slice_)
-        std_dev = np.std(slice_)
-        
-        sma.append(mean)
-        upper.append(mean + 2 * std_dev)
-        lower.append(mean - 2 * std_dev)
+        try:
+            slice_ = closes[i - period + 1:i + 1]
+            mean = np.mean(slice_)
+            std_dev = np.std(slice_)
+            
+            sma.append(mean)
+            upper.append(mean + 2 * std_dev)
+            lower.append(mean - 2 * std_dev)
+        except (ValueError, TypeError):
+            sma.append(None)
+            upper.append(None)
+            lower.append(None)
     
     return {'sma': sma, 'upper': upper, 'lower': lower}
 
@@ -168,8 +218,23 @@ def calculate_stats(data):
     closes = data['Close'].dropna().values
     returns = calculate_returns(data)
     
-    if not returns:
+    if len(closes) < 2:
         return {}
+    
+    if not returns:
+        return {
+            'currentPrice': round(closes[-1], 2),
+            'totalReturn': 0.0,
+            'volatility': 0.0,
+            'avgReturn': 0.0,
+            'maxReturn': 0.0,
+            'minReturn': 0.0,
+            'medianReturn': 0.0,
+            'sharpe': 0.0,
+            'maxDrawdown': 0.0,
+            'skewness': 0.0,
+            'kurtosis': 0.0
+        }
     
     mean = np.mean(returns)
     variance = np.var(returns)
@@ -265,13 +330,20 @@ with tab1:
             fig = go.Figure()
             
             for ticker, data in datasets.items():
-                closes = data['Close'].values
-                dates = data['Date']
+                closes = data['Close'].dropna().values
+                dates = data['Date'].iloc[:len(closes)]
                 
                 cumulative_returns = [0]
-                for i in range(1, len(closes)):
-                    return_ = ((closes[i] - closes[0]) / closes[0]) * 100
-                    cumulative_returns.append(return_)
+                if len(closes) > 1:
+                    for i in range(1, len(closes)):
+                        try:
+                            if closes[0] != 0:
+                                return_ = ((closes[i] - closes[0]) / closes[0]) * 100
+                                cumulative_returns.append(return_)
+                            else:
+                                cumulative_returns.append(0)
+                        except (ValueError, TypeError):
+                            cumulative_returns.append(0)
                 
                 fig.add_trace(go.Scatter(
                     x=dates,
@@ -297,20 +369,26 @@ with tab1:
             
             for ticker, data in datasets.items():
                 returns = calculate_returns(data)
-                dates = data['Date'][1:]
+                dates = data['Date'].iloc[1:len(returns)+1]
                 
                 window = 30
                 rolling_vol = []
                 vol_dates = []
                 
-                for i in range(window, len(returns)):
-                    window_returns = returns[i-window:i]
-                    mean = np.mean(window_returns)
-                    variance = np.var(window_returns)
-                    vol = math.sqrt(variance) * math.sqrt(252) * 100
-                    
-                    rolling_vol.append(vol)
-                    vol_dates.append(dates.iloc[i])
+                if len(returns) >= window:
+                    for i in range(window, len(returns)):
+                        try:
+                            window_returns = returns[i-window:i]
+                            if window_returns:
+                                mean = np.mean(window_returns)
+                                variance = np.var(window_returns)
+                                if variance > 0:
+                                    vol = math.sqrt(variance) * math.sqrt(252) * 100
+                                    rolling_vol.append(vol)
+                                    if i < len(dates):
+                                        vol_dates.append(dates.iloc[i])
+                        except (ValueError, TypeError):
+                            continue
                 
                 fig.add_trace(go.Scatter(
                     x=vol_dates,
@@ -405,7 +483,8 @@ with tab1:
             st.subheader("Price with Moving Averages")
             for ticker, data in datasets.items():
                 dates = data['Date']
-                closes = data['Close'].values
+                closes = data['Close'].dropna().values
+                dates = dates.iloc[:len(closes)]
                 
                 # Calculate MAs
                 ma20 = []
@@ -414,17 +493,26 @@ with tab1:
                 
                 for i in range(len(closes)):
                     if i >= 19:
-                        ma20.append(np.mean(closes[i-19:i+1]))
+                        try:
+                            ma20.append(np.mean(closes[i-19:i+1]))
+                        except (ValueError, TypeError):
+                            ma20.append(None)
                     else:
                         ma20.append(None)
                     
                     if i >= 49:
-                        ma50.append(np.mean(closes[i-49:i+1]))
+                        try:
+                            ma50.append(np.mean(closes[i-49:i+1]))
+                        except (ValueError, TypeError):
+                            ma50.append(None)
                     else:
                         ma50.append(None)
                     
                     if i >= 199:
-                        ma200.append(np.mean(closes[i-199:i+1]))
+                        try:
+                            ma200.append(np.mean(closes[i-199:i+1]))
+                        except (ValueError, TypeError):
+                            ma200.append(None)
                     else:
                         ma200.append(None)
                 
