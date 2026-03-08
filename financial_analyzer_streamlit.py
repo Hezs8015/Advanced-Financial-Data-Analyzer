@@ -497,7 +497,13 @@ with tab1:
         elif analysis_type == "Candlestick":
             st.subheader("Candlestick Charts (Last 90 Days)")
             for ticker, data in datasets.items():
-                recent_data = data.tail(90)
+                # Drop rows with NaN in required columns
+                required_cols = ['Date', 'Open', 'High', 'Low', 'Close']
+                recent_data = data.tail(90).dropna(subset=required_cols)
+                
+                if len(recent_data) == 0:
+                    st.error(f"{ticker}: Insufficient data for candlestick chart")
+                    continue
                 
                 fig = go.Figure(data=[go.Candlestick(
                     x=recent_data['Date'],
@@ -698,8 +704,14 @@ with tab1:
             st.subheader("Price & Volume Analysis")
             for ticker, data in datasets.items():
                 dates = data['Date']
-                closes = data['Close']
-                volumes = data['Volume']
+                closes = data['Close'].dropna()
+                volumes = data['Volume'].dropna() if 'Volume' in data.columns else pd.Series([0] * len(dates))
+                
+                # Align lengths
+                min_len = min(len(dates), len(closes), len(volumes))
+                dates = dates.iloc[:min_len]
+                closes = closes.iloc[:min_len]
+                volumes = volumes.iloc[:min_len]
                 
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
@@ -774,14 +786,25 @@ with tab1:
             
             for ticker, data in datasets.items():
                 # Extract month and year
-                data['Month'] = data['Date'].dt.strftime('%Y-%m')
+                data_clean = data.dropna(subset=['Close']).copy()
+                if len(data_clean) == 0:
+                    st.error(f"{ticker}: No valid Close price data")
+                    continue
+                    
+                data_clean['Month'] = data_clean['Date'].dt.strftime('%Y-%m')
                 
                 # Calculate monthly returns
-                monthly_data = data.groupby('Month').agg({
+                monthly_data = data_clean.groupby('Month').agg({
                     'Close': ['first', 'last']
                 }).reset_index()
                 monthly_data.columns = ['Month', 'First', 'Last']
-                monthly_data['Return'] = ((monthly_data['Last'] - monthly_data['First']) / monthly_data['First']) * 100
+                
+                # Calculate returns with division by zero protection
+                monthly_data['Return'] = monthly_data.apply(
+                    lambda row: ((row['Last'] - row['First']) / row['First']) * 100 
+                    if row['First'] != 0 and pd.notna(row['First']) and pd.notna(row['Last']) 
+                    else 0, axis=1
+                )
                 
                 # Plot
                 fig = go.Figure()
@@ -1155,18 +1178,30 @@ with tab3:
             long_period = st.slider("Long MA Period", min_value=20, max_value=200, value=50)
             
             for ticker, data in datasets.items():
+                # Clean data
+                data_clean = data.dropna(subset=['Close']).copy()
+                if len(data_clean) < long_period:
+                    st.error(f"{ticker}: Insufficient data for MA Crossover strategy (need at least {long_period} data points)")
+                    continue
+                
                 # Calculate MAs
                 short_ma = []
                 long_ma = []
                 
-                for i in range(len(data)):
+                for i in range(len(data_clean)):
                     if i >= short_period - 1:
-                        short_ma.append(data['Close'].iloc[i-short_period+1:i+1].mean())
+                        try:
+                            short_ma.append(float(data_clean['Close'].iloc[i-short_period+1:i+1].mean()))
+                        except (ValueError, TypeError):
+                            short_ma.append(None)
                     else:
                         short_ma.append(None)
                     
                     if i >= long_period - 1:
-                        long_ma.append(data['Close'].iloc[i-long_period+1:i+1].mean())
+                        try:
+                            long_ma.append(float(data_clean['Close'].iloc[i-long_period+1:i+1].mean()))
+                        except (ValueError, TypeError):
+                            long_ma.append(None)
                     else:
                         long_ma.append(None)
                 
@@ -1257,12 +1292,26 @@ with tab3:
             lookback_period = st.slider("Lookback Period", min_value=1, max_value=30, value=10)
             
             for ticker, data in datasets.items():
+                # Clean data
+                data_clean = data.dropna(subset=['Close']).copy()
+                if len(data_clean) < lookback_period + 1:
+                    st.error(f"{ticker}: Insufficient data for Momentum strategy (need at least {lookback_period + 1} data points)")
+                    continue
+                
                 # Calculate momentum
                 momentum = []
-                for i in range(len(data)):
+                for i in range(len(data_clean)):
                     if i >= lookback_period:
-                        mom = (data['Close'].iloc[i] - data['Close'].iloc[i-lookback_period]) / data['Close'].iloc[i-lookback_period] * 100
-                        momentum.append(mom)
+                        try:
+                            current = float(data_clean['Close'].iloc[i])
+                            previous = float(data_clean['Close'].iloc[i-lookback_period])
+                            if previous != 0 and not math.isnan(current) and not math.isnan(previous):
+                                mom = (current - previous) / previous * 100
+                                momentum.append(mom)
+                            else:
+                                momentum.append(None)
+                        except (ValueError, TypeError):
+                            momentum.append(None)
                     else:
                         momentum.append(None)
                 
@@ -1279,8 +1328,8 @@ with tab3:
                 
                 # Create signal dataframe
                 signal_df = pd.DataFrame({
-                    'Date': data['Date'],
-                    'Close': data['Close'],
+                    'Date': data_clean['Date'],
+                    'Close': data_clean['Close'],
                     f'Momentum ({lookback_period} days)': momentum,
                     'Signal': signals
                 })
@@ -1357,11 +1406,15 @@ with tab4:
             st.subheader("Position Sizing")
             
             for ticker, data in datasets.items():
-                current_price = data['Close'].iloc[-1]
+                try:
+                    current_price = float(data['Close'].iloc[-1])
+                except (ValueError, TypeError):
+                    st.error(f"{ticker}: Invalid current price data type")
+                    continue
                 
                 # Validate data before calculation
-                if current_price is None or current_price == 0:
-                    st.error(f"{ticker}: Invalid current price (zero or None)")
+                if current_price is None or current_price == 0 or math.isnan(current_price):
+                    st.error(f"{ticker}: Invalid current price (zero, None, or NaN)")
                     continue
                 if stop_loss is None or stop_loss == 0:
                     st.error(f"{ticker}: Stop loss cannot be zero")
@@ -1371,8 +1424,8 @@ with tab4:
                 risk_amount = initial_capital * (risk_per_trade / 100)
                 stop_loss_amount = current_price * (stop_loss / 100)
                 
-                if stop_loss_amount == 0:
-                    st.error(f"{ticker}: Stop loss amount is zero")
+                if stop_loss_amount == 0 or math.isnan(stop_loss_amount):
+                    st.error(f"{ticker}: Stop loss amount is zero or invalid")
                     continue
                     
                 position_size = risk_amount / stop_loss_amount
@@ -1393,11 +1446,15 @@ with tab4:
             st.subheader("Risk/Reward Analysis")
             
             for ticker, data in datasets.items():
-                current_price = data['Close'].iloc[-1]
+                try:
+                    current_price = float(data['Close'].iloc[-1])
+                except (ValueError, TypeError):
+                    st.error(f"{ticker}: Invalid current price data type")
+                    continue
                 
                 # Validate data before calculation
-                if current_price is None or current_price == 0:
-                    st.error(f"{ticker}: Invalid current price (zero or None)")
+                if current_price is None or current_price == 0 or math.isnan(current_price):
+                    st.error(f"{ticker}: Invalid current price (zero, None, or NaN)")
                     continue
                 if stop_loss is None or stop_loss == 0:
                     st.error(f"{ticker}: Stop loss cannot be zero")
@@ -1456,48 +1513,73 @@ with tab4:
                 
                 for ticker in tickers:
                     returns = calculate_returns(datasets[ticker])
+                    if not returns:
+                        st.error(f"{ticker}: Insufficient data for portfolio risk calculation")
+                        continue
                     returns_data[ticker] = returns
                     min_length = min(min_length, len(returns))
                 
-                # Align returns
-                for ticker in tickers:
-                    returns_data[ticker] = returns_data[ticker][-min_length:]
-                
-                # Create returns matrix
-                returns_matrix = np.array([returns_data[ticker] for ticker in tickers]).T
-                
-                # Calculate portfolio metrics (equal weights)
-                weights = np.ones(len(tickers)) / len(tickers)
-                portfolio_returns = np.dot(returns_matrix, weights)
-                portfolio_mean = np.mean(portfolio_returns)
-                portfolio_volatility = np.std(portfolio_returns) * math.sqrt(252)
-                portfolio_sharpe = ((portfolio_mean * 252) - 2) / portfolio_volatility if portfolio_volatility > 0 else 0
-                
-                # Calculate max drawdown
-                portfolio_cumulative = np.cumprod(1 + portfolio_returns / 100)
-                peak = portfolio_cumulative[0]
-                max_dd = 0
-                for value in portfolio_cumulative:
-                    if value > peak:
-                        peak = value
-                    dd = ((value - peak) / peak) * 100
-                    if dd < max_dd:
-                        max_dd = dd
-                
-                # Display results
-                st.write("**Portfolio Risk Metrics (Equal Weights)**")
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Annual Return", f"{(portfolio_mean * 252):.2f}%")
-                with col2:
-                    st.metric("Annual Volatility", f"{portfolio_volatility:.2f}%")
-                with col3:
-                    st.metric("Sharpe Ratio", f"{portfolio_sharpe:.2f}")
-                with col4:
-                    st.metric("Max Drawdown", f"{max_dd:.2f}%")
-                
-                # Plot portfolio cumulative returns
-                dates = datasets[tickers[0]]['Date'].iloc[-min_length:]
+                if len(returns_data) < 2:
+                    st.error("Need at least 2 datasets with valid returns for portfolio risk analysis")
+                elif min_length < 2:
+                    st.error("Insufficient data points for portfolio risk calculation")
+                else:
+                    # Align returns
+                    for ticker in returns_data:
+                        returns_data[ticker] = returns_data[ticker][-min_length:]
+                    
+                    # Create returns matrix
+                    try:
+                        returns_matrix = np.array([returns_data[ticker] for ticker in returns_data.keys()]).T
+                        
+                        # Calculate portfolio metrics (equal weights)
+                        n_assets = len(returns_data)
+                        weights = np.ones(n_assets) / n_assets
+                        portfolio_returns = np.dot(returns_matrix, weights)
+                        
+                        if len(portfolio_returns) > 0:
+                            portfolio_mean = np.mean(portfolio_returns)
+                            portfolio_volatility = np.std(portfolio_returns) * math.sqrt(252)
+                            portfolio_sharpe = ((portfolio_mean * 252) - 2) / portfolio_volatility if portfolio_volatility > 0 else 0
+                            
+                            # Calculate max drawdown
+                            portfolio_cumulative = np.cumprod(1 + portfolio_returns / 100)
+                            if len(portfolio_cumulative) > 0:
+                                peak = portfolio_cumulative[0]
+                                max_dd = 0
+                                for value in portfolio_cumulative:
+                                    if value > peak:
+                                        peak = value
+                                    if peak != 0:
+                                        dd = ((value - peak) / peak) * 100
+                                        if dd < max_dd:
+                                            max_dd = dd
+                                
+                                # Display results
+                                st.write("**Portfolio Risk Metrics (Equal Weights)**")
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    st.metric("Annual Return", f"{(portfolio_mean * 252):.2f}%")
+                                with col2:
+                                    st.metric("Annual Volatility", f"{portfolio_volatility:.2f}%")
+                                with col3:
+                                    st.metric("Sharpe Ratio", f"{portfolio_sharpe:.2f}")
+                                with col4:
+                                    st.metric("Max Drawdown", f"{max_dd:.2f}%")
+                                
+                                # Plot portfolio cumulative returns
+                                first_ticker = list(returns_data.keys())[0]
+                                dates = datasets[first_ticker]['Date'].iloc[-min_length:]
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(
+                                    x=dates,
+                                    y=(portfolio_cumulative - 1) * 100,
+                                    mode='lines',
+                                    name='Portfolio',
+                                    line=dict(color='#667eea', width=2)
+                                ))
+                    except Exception as e:
+                        st.error(f"Error calculating portfolio risk: {str(e)}")
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=dates,
